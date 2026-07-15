@@ -25,7 +25,7 @@ This is expected drill behavior. Fixing **after** it occurs is OK.
 From outside the instance, the public health check fails:
 
 ```bash
-curl -i http://EC2_PUBLIC_IP/health
+curl -i http://13.229.117.41/health
 ```
 
 ```text
@@ -37,7 +37,7 @@ Server: nginx/...
 SSH into the instance and investigate.
 
 ```bash
-ssh ubuntu@EC2_PUBLIC_IP
+ssh ubuntu@13.229.117.41
 ```
 
 ---
@@ -167,7 +167,7 @@ Nginx /health returns 200 healthy
 Also from your laptop:
 
 ```bash
-curl -i http://EC2_PUBLIC_IP/health
+curl -i http://13.229.117.41/health
 ```
 
 **Expected:** `HTTP/1.1 200 OK` and `{"status":"healthy"}`.
@@ -420,7 +420,7 @@ sudo systemctl enable --now nginx
 sudo systemctl reload nginx
 
 curl -i http://127.0.0.1/health
-curl -i http://EC2_PUBLIC_IP/health
+curl -i http://13.229.117.41/health
 ```
 
 Security group: allow inbound **TCP 80** (and SSH 22). Do not open **3000**.
