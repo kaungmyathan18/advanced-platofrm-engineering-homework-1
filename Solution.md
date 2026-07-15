@@ -12,6 +12,8 @@ The app intentionally fills the root disk.
 
 This is expected drill behavior. Fixing **after** it occurs is OK.
 
+> **Note:** Cursor Markdown preview may not render local images. On GitHub (after commit/push) these screenshots display normally. You can also open [`Solution.html`](Solution.html) in a browser.
+
 ---
 
 ## Incident investigation and remediation (step by step)
@@ -89,7 +91,7 @@ ls -lh /var/log/storage-breaker/application.log
 
 ![application.log size before fix](screenshots/08-log-size-before-fix.png)
 
-**Finding / root cause:** `application.log` grew to **~4.0G** and filled the root volume. The app’s background writer targets ~10 GiB of logs over 2.5 hours; once usage ≥ 95%, `/health` returns unhealthy.
+**Finding / root cause:** `application.log` grew to **~4.0G** and filled the root volume. The app’s background writer targets ~10 GiB of logs over 2.5 hours; once usage ≥ 95%, `/health` returns unhealthy.
 
 ---
 
