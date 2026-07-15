@@ -16,6 +16,14 @@ from fastapi.responses import JSONResponse
 LOG_DIRECTORY = Path("/var/log/storage-breaker")
 LOG_FILE = LOG_DIRECTORY / "application.log"
 
+# Long-term fix: cap the log file by size and keep a bounded number of
+# rotated backups. This makes disk usage self-limiting regardless of the
+# write rate, so the volume can no longer be filled to failure.
+#
+# Worst-case footprint = LOG_MAX_BYTES * (LOG_BACKUP_COUNT + 1).
+LOG_MAX_BYTES = 200 * 1024**2
+LOG_BACKUP_COUNT = 5
+
 TARGET_LOG_BYTES = 10 * 1024**3
 
 DURATION_HOURS = 2.5
@@ -70,6 +78,29 @@ def get_current_log_size() -> int:
         return LOG_FILE.stat().st_size
     except FileNotFoundError:
         return 0
+
+
+def rotate_logs() -> None:
+    """
+    Rotate the log file when it reaches the size cap.
+
+    Renames application.log -> application.log.1 and shifts existing
+    backups up by one, discarding the oldest beyond LOG_BACKUP_COUNT.
+    Recent history is preserved instead of being truncated away, and the
+    writer creates a fresh application.log on its next open ("ab").
+    """
+
+    oldest = LOG_FILE.with_name(f"{LOG_FILE.name}.{LOG_BACKUP_COUNT}")
+    if oldest.exists():
+        oldest.unlink()
+
+    for index in range(LOG_BACKUP_COUNT - 1, 0, -1):
+        source = LOG_FILE.with_name(f"{LOG_FILE.name}.{index}")
+        if source.exists():
+            source.rename(LOG_FILE.with_name(f"{LOG_FILE.name}.{index + 1}"))
+
+    if LOG_FILE.exists():
+        LOG_FILE.rename(LOG_FILE.with_name(f"{LOG_FILE.name}.1"))
 
 
 def build_log_record(sequence: int) -> bytes:
@@ -159,7 +190,12 @@ def log_writer() -> None:
         try:
             record = build_log_record(sequence)
 
-            # Reopen on every write so external log rotation works cleanly.
+            # Size-based rotation: cap the file before it can grow without
+            # bound. This is the long-term fix for the disk-fill failure.
+            if get_current_log_size() >= LOG_MAX_BYTES:
+                rotate_logs()
+
+            # Reopen on every write so log rotation works cleanly.
             with LOG_FILE.open("ab", buffering=0) as log_file:
                 log_file.write(record)
 

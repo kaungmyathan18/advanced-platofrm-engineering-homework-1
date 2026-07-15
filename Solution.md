@@ -12,11 +12,13 @@ The app intentionally fills the root disk.
 
 This is expected drill behavior. Fixing **after** it occurs is OK.
 
-> **Note:** Cursor Markdown preview may not render local images. On GitHub (after commit/push) these screenshots display normally. You can also open [`Solution.html`](Solution.html) in a browser.
-
 ---
 
+
+
 ## Incident investigation and remediation (step by step)
+
+
 
 ### Symptom
 
@@ -40,6 +42,8 @@ ssh ubuntu@EC2_PUBLIC_IP
 
 ---
 
+
+
 ### Step 1 — Confirm disk pressure (not inodes)
 
 ```bash
@@ -47,11 +51,13 @@ df -h /
 df -i /
 ```
 
-![Root disk 100% full; inodes only 13%](screenshots/01-disk-full-df.png)
+Root disk 100% full; inodes only 13%
 
 **Finding:** `/` is **100%** used (`Avail: 0`). Inode usage is only **13%**, so this is block-space exhaustion, not inode exhaustion.
 
 ---
+
+
 
 ### Step 2 — Find which top-level directory is large
 
@@ -59,11 +65,13 @@ df -i /
 sudo du -xh / --max-depth=1 2>/dev/null | sort -h
 ```
 
-![Top-level disk usage; /var is 4.5G](screenshots/02-du-root.png)
+Top-level disk usage; /var is 4.5G
 
 **Finding:** `/var` is the largest directory (**4.5G**).
 
 ---
+
+
 
 ### Step 3 — Narrow into `/var/log`
 
@@ -71,11 +79,13 @@ sudo du -xh / --max-depth=1 2>/dev/null | sort -h
 sudo du -sh /var/log/* 2>/dev/null | sort -h
 ```
 
-![/var/log/storage-breaker is 4.0G](screenshots/03-du-var-log.png)
+/var/log/storage-breaker is 4.0G
 
 **Finding:** `/var/log/storage-breaker` is **4.0G**.
 
 ---
+
+
 
 ### Step 4 — Identify the exact file
 
@@ -85,15 +95,13 @@ du -sh /var/log/storage-breaker/*
 ls -lh /var/log/storage-breaker/application.log
 ```
 
-![Directory listing shows application.log at 4.0G](screenshots/04-ls-storage-breaker.png)
-
-![du confirms application.log is 4.0G](screenshots/05-du-application-log.png)
-
-![application.log size before fix](screenshots/08-log-size-before-fix.png)
+Directory listing shows application.log at 4.0Gdu confirms application.log is 4.0Gapplication.log size before fix
 
 **Finding / root cause:** `application.log` grew to **~4.0G** and filled the root volume. The app’s background writer targets ~10 GiB of logs over 2.5 hours; once usage ≥ 95%, `/health` returns unhealthy.
 
 ---
+
+
 
 ### Step 5 — Check whether the service is still running
 
@@ -102,13 +110,13 @@ sudo systemctl status storage-breaker
 sudo journalctl -u storage-breaker -n 50 --no-pager
 ```
 
-![storage-breaker.service is active (running)](screenshots/06-systemctl-status.png)
-
-![journalctl shows service history](screenshots/07-journalctl.png)
+storage-breaker.service is active (running)journalctl shows service history
 
 **Finding:** The process can still be **active (running)** while health is unhealthy — the failure mode is disk pressure / write failures, not necessarily a crashed unit.
 
 ---
+
+
 
 ### Step 6 — Free space (truncate the log)
 
@@ -118,9 +126,11 @@ sudo truncate -s 0 /var/log/storage-breaker/application.log
 # sudo rm -f /var/log/storage-breaker/application.log
 ```
 
-![truncate application.log to 0 bytes](screenshots/09-truncate-log.png)
+truncate application.log to 0 bytes
 
 ---
+
+
 
 ### Step 7 — Confirm disk recovered
 
@@ -128,11 +138,13 @@ sudo truncate -s 0 /var/log/storage-breaker/application.log
 df -h /
 ```
 
-![Disk usage dropped to ~40% after truncate](screenshots/10-disk-after-fix.png)
+Disk usage dropped to ~40% after truncate
 
 **Result:** Usage dropped from **100%** to about **40%**, with free space available again.
 
 ---
+
+
 
 ### Step 8 — Verify health recovered
 
@@ -142,7 +154,7 @@ Direct to Uvicorn:
 curl -i http://127.0.0.1:3000/health
 ```
 
-![Uvicorn /health returns 200 healthy](screenshots/11-health-uvicorn-ok.png)
+Uvicorn /health returns 200 healthy
 
 Through Nginx (port 80):
 
@@ -150,7 +162,7 @@ Through Nginx (port 80):
 curl -i http://127.0.0.1/health
 ```
 
-![Nginx /health returns 200 healthy](screenshots/12-health-nginx-ok.png)
+Nginx /health returns 200 healthy
 
 Also from your laptop:
 
@@ -162,23 +174,103 @@ curl -i http://EC2_PUBLIC_IP/health
 
 ---
 
+
+
 ### Investigation summary
 
-| Step | Check | Result |
-|------|--------|--------|
-| Symptom | External `/health` | `503 unhealthy` |
-| Disk | `df -h /` | Root **100%** full |
-| Inodes | `df -i /` | Only **13%** — not the issue |
-| Hotspot | `du` on `/` then `/var/log` | `/var/log/storage-breaker` |
-| Culprit | `application.log` | ~**4.0G** log file |
-| Fix | `truncate -s 0` | Disk back to ~**40%** |
-| Verify | curl `/health` | `200 healthy` |
 
-Optional hardening later: logrotate, disk monitoring alerts, or a larger EBS volume.
+| Step    | Check                       | Result                       |
+| ------- | --------------------------- | ---------------------------- |
+| Symptom | External `/health`          | `503 unhealthy`              |
+| Disk    | `df -h /`                   | Root **100%** full           |
+| Inodes  | `df -i /`                   | Only **13%** — not the issue |
+| Hotspot | `du` on `/` then `/var/log` | `/var/log/storage-breaker`   |
+| Culprit | `application.log`           | ~**4.0G** log file           |
+| Fix     | `truncate -s 0`             | Disk back to ~**40%**        |
+| Verify  | curl `/health`              | `200 healthy`                |
+
+
+The `truncate` above is only the immediate recovery. The permanent fix is below.
 
 ---
 
+## Long-term fix
+
+`truncate -s 0` frees space once but does nothing to prevent recurrence. The
+writer targets ~10 GiB of logs, so the file simply grows back and refills the
+root volume within about an hour.
+
+### Why time-based truncation does not work
+
+A cron job that truncates on a fixed schedule races the failure:
+
+- The disk reaches ~100% (and crosses the 95% unhealthy threshold earlier) in
+  roughly **one hour**, not the nominal 2.5 h — the root volume is only 10 GiB.
+- A **2.5 h** interval leaves the instance unhealthy for most of each cycle.
+- A **1 h** interval has effectively no safety margin: any drift, reboot, or
+  variance in write rate pushes usage past 95% before the next run.
+- Truncation also discards **all** logs each time, so there is no history left
+  to debug the next incident.
+
+A fixed schedule is the wrong trigger. The correct trigger is **size**.
+
+### Chosen fix — size-based rotation in the app
+
+The writer now caps the log file by size and keeps a bounded number of
+rotated backups, so disk usage is self-limiting regardless of write rate. This
+is race-free (tied to size, not the clock) and preserves recent logs.
+
+Implemented in `app.py`:
+
+```python
+LOG_MAX_BYTES = 200 * 1024**2   # cap per file
+LOG_BACKUP_COUNT = 5            # rotated backups to keep
+
+# before each write:
+if get_current_log_size() >= LOG_MAX_BYTES:
+    rotate_logs()   # application.log -> application.log.1, shift others
+```
+
+Worst-case footprint is bounded: `LOG_MAX_BYTES * (LOG_BACKUP_COUNT + 1)` ≈
+**1.2 GiB**, well under the 10 GiB volume. Because the writer reopens the file
+on every write (`open("ab")`), it starts a fresh `application.log` immediately
+after a rotation with no held-inode / ghost-space problem.
+
+### Defense in depth (recommended alongside)
+
+- **logrotate** (OS-level equivalent) if you cannot change the app:
+
+```
+# /etc/logrotate.d/storage-breaker
+/var/log/storage-breaker/*.log {
+    maxsize 200M
+    rotate 5
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0644 ubuntu ubuntu
+}
+```
+
+Run it frequently (logrotate's default daily cron is far too slow for this
+fill rate) via a systemd timer every ~2 min.
+
+- **Separate EBS volume** mounted at `/var/log/storage-breaker` so log growth
+  can never fill the root/OS filesystem.
+- **Monitoring/alerting**: CloudWatch agent alarm on `disk_used_percent` at
+  ~80% so pressure is caught early instead of at 95%.
+
+Increasing the EBS volume size alone is **not** a fix — it only delays the same
+failure.
+
+---
+
+
+
 ## Deploy on EC2
+
+
 
 ### 1. Install packages
 
@@ -192,6 +284,8 @@ If `python3 -m venv` fails with `ensurepip is not available`:
 ```bash
 sudo apt install -y python3-venv python3-pip
 ```
+
+
 
 ### 2. App directories and clone
 
@@ -212,6 +306,8 @@ App path used here:
 /opt/storage-breaker/ape-aws-ec2-assessment-1
 ```
 
+
+
 ### 3. Virtualenv and dependencies
 
 ```bash
@@ -222,6 +318,8 @@ source .venv/bin/activate
 pip install --upgrade pip
 pip install -r ape-aws-ec2-assessment-1/requirements.txt
 ```
+
+
 
 ### 4. systemd unit
 
@@ -286,6 +384,8 @@ sudo systemctl restart storage-breaker
 sudo systemctl stop storage-breaker
 ```
 
+
+
 ### 5. Nginx reverse proxy (required)
 
 Do **not** expose port `3000` publicly. Nginx listens on port `80` and proxies to `127.0.0.1:3000`.
@@ -327,7 +427,11 @@ Security group: allow inbound **TCP 80** (and SSH 22). Do not open **3000**.
 
 ---
 
+
+
 ## Troubleshooting faced during setup
+
+
 
 ### `python3 -m venv` fails (`ensurepip is not available`)
 
@@ -356,6 +460,8 @@ Then:
 sudo systemctl daemon-reload
 sudo systemctl restart storage-breaker
 ```
+
+
 
 ### `curl: Failed to connect` right after `systemctl start`
 
